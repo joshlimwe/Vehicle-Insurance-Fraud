@@ -283,19 +283,6 @@ def enhanced_feature_engineering(df):
     add_bucket("Age",[0,20,30,45,60,120],"Age_bucket")
     add_bucket("AgeOfVehicle",[0,1,4,10,25],"VehicleAge_bucket")
 
-    #target encoding
-    target_enc_cols = [
-        "AccidentArea", "VehicleMaker", "VehicleModel", "PolicyType",
-        "BasePolicy", "Make", "DayOfWeek", "DayOfWeekClaimed"
-    ]
-
-    global_mean = y.mean()
-
-    for col in target_enc_cols:
-        if col in df.columns:
-            means = df.groupby(col)["FraudFound"].mean() if "FraudFound" in df.columns else {}
-            df[col + "_te"] = df[col].map(means).fillna(global_mean)
-
     return df
 
 train_fe = enhanced_feature_engineering(train)
