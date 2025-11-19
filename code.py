@@ -14,7 +14,7 @@
 import pandas as pd
 import numpy as np
 import re, warnings
-warnings.filterwarnings("ignore")
+warnings.filterwarnings("ignore") 
 
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import LabelEncoder
@@ -195,7 +195,33 @@ def enhanced_feature_engineering(df):
     for col in df.columns:
         if df[col].dtype == "object":
             df[col + "_count"] = df[col].map(df[col].value_counts())
+    
+    #timing features
+    if "DayOfWeek_num" in df.columns:
+        df["IsWeekend"] = df["DayOfWeek_num"].isin([6, 7]).astype(int)
 
+    if "Month_num" in df.columns:
+        df["IsMonthEnd"] = df["Month_num"].isin([3, 6, 9, 12]).astype(int)
+
+    if "Days_Policy_Claim" in df.columns and "Days_Policy_Accident" in df.columns:
+        df["SameDayReport"] = (df["Days_Policy_Claim"] == df["Days_Policy_Accident"]).astype(int)
+        df["ClaimDelay"] = df["Days_Policy_Claim"] - df["Days_Policy_Accident"]
+    
+    # incosistency features
+    df["InconsistencyScore"] = 0
+
+    if "Month_num" in df.columns and "MonthClaimed_num" in df.columns:
+        df["InconsistencyScore"] += (df["Month_num"] != df["MonthClaimed_num"]).astype(int)
+
+    if "DayOfWeek_num" in df.columns and "DayOfWeekClaimed_num" in df.columns:
+        df["InconsistencyScore"] += (df["DayOfWeek_num"] != df["DayOfWeekClaimed_num"]).astype(int)
+
+    if "WeekOfMonth" in df.columns and "WeekOfMonthClaimed" in df.columns:
+        df["InconsistencyScore"] += (df["WeekOfMonth"] != df["WeekOfMonthClaimed"]).astype(int)
+
+    if "AddressChange_Claim" in df.columns:
+        df["InconsistencyScore"] += (df["AddressChange_Claim"] > 1).astype(int)
+    
     # Basic diffs
     def add_diff(a,b,name):
         if a in df.columns and b in df.columns:
@@ -206,10 +232,26 @@ def enhanced_feature_engineering(df):
     add_diff("WeekOfMonth","WeekOfMonthClaimed","WOM_diff")
 
     # Interaction features
-    def add_ratio(n,d,name):
-        if n in df.columns and d in df.columns:
-            dn = pd.to_numeric(df[d],errors="coerce").fillna(0)+1e-6
-            df[name] = pd.to_numeric(df[n],errors="coerce") / dn
+
+    def add_interaction(a, b, name):
+        if a in df.columns and b in df.columns:
+            df[name] = pd.to_numeric(df[a], errors="coerce") * pd.to_numeric(df[b], errors="coerce")
+
+    add_interaction("VehiclePrice", "AgeOfVehicle", "Price_x_AgeVehicle")
+    add_interaction("Deductible", "DriverRating", "Deductible_x_Rating")
+    add_interaction("VehiclePrice", "PastNumberOfClaims", "Price_x_PastClaims")
+    add_interaction("Age", "NumberOfCars", "Age_x_NumCars")
+
+    def add_ratio(a, b, name):
+        if a in df.columns and b in df.columns:
+            df[name] = (
+                pd.to_numeric(df[a], errors="coerce") /
+                (pd.to_numeric(df[b], errors="coerce") + 1e-6)
+            )
+
+    add_ratio("Deductible", "VehiclePrice", "Deductible_per_Price")
+    add_ratio("PastNumberOfClaims", "NumberOfCars", "Claims_per_Car")
+    add_ratio("Days_Policy_Accident", "Days_Policy_Claim", "Acc_to_Claim_Ratio")
 
     def add_product(a,b,name):
         if a in df.columns and b in df.columns:
@@ -237,6 +279,22 @@ def enhanced_feature_engineering(df):
 
     add_bucket("Age",[0,20,30,45,60,120],"Age_bucket")
     add_bucket("AgeOfVehicle",[0,1,4,10,25],"VehicleAge_bucket")
+
+    add_bucket("Age",[0,20,30,45,60,120],"Age_bucket")
+    add_bucket("AgeOfVehicle",[0,1,4,10,25],"VehicleAge_bucket")
+
+    #target encoding
+    target_enc_cols = [
+        "AccidentArea", "VehicleMaker", "VehicleModel", "PolicyType",
+        "BasePolicy", "Make", "DayOfWeek", "DayOfWeekClaimed"
+    ]
+
+    global_mean = y.mean()
+
+    for col in target_enc_cols:
+        if col in df.columns:
+            means = df.groupby(col)["FraudFound"].mean() if "FraudFound" in df.columns else {}
+            df[col + "_te"] = df[col].map(means).fillna(global_mean)
 
     return df
 
