@@ -29,6 +29,7 @@ from xgboost import XGBClassifier
 from lightgbm import LGBMClassifier
 from catboost import CatBoostClassifier
 
+#configurations
 TARGET = "FraudFound"
 RANDOM_SEEDS = [42, 99, 123]
 N_FOLDS = 10
@@ -40,8 +41,7 @@ assert TARGET in train.columns, f"Target column {TARGET} missing."
 y = train[TARGET]
 train = train.drop(columns=[TARGET])
 
-# Converts ordinal string to numeric values
-
+#converts ordinal string to numeric values so that tree models handle them more consistently
 MONTH_MAP = {
     "Jan":1,"Feb":2,"Mar":3,"Apr":4,"May":5,"Jun":6,
     "Jul":7,"Aug":8,"Sep":9,"Oct":10,"Nov":11,"Dec":12
@@ -51,6 +51,7 @@ DOW_MAP = {
     "Friday":5,"Saturday":6,"Sunday":7
 }
 
+#helper to convert anything to float 
 def _to_float_or_nan(x):
     try:
         if x is None:
@@ -64,6 +65,7 @@ def _to_float_or_nan(x):
     except:
         return np.nan
 
+#converts price ranges (eg. "10,000 to 20,000") to numeric midpoint
 def parse_price_mid(x):
     if isinstance(x, (int, float, np.integer, np.floating)):
         return float(x)
@@ -80,6 +82,7 @@ def parse_price_mid(x):
     except:
         return np.nan
 
+#converts features like "1 to 3 years" to numeric midpoint
 def parse_range_mid_or_years(x):
     if isinstance(x, (int,float,np.integer,np.floating)):
         return float(x)
@@ -99,6 +102,7 @@ def parse_range_mid_or_years(x):
             return np.nan
     return _to_float_or_nan(s)
 
+#converts values like "more than x" or "1 to 3" consistently
 def parse_more_than_or_num(x):
     if isinstance(x,(int,float,np.integer,np.floating)):
         return float(x)
@@ -118,6 +122,7 @@ def parse_more_than_or_num(x):
             return np.nan
     return _to_float_or_nan(s)
 
+#extracts number from strings like "2 vehicles" for easier handling
 def parse_number_of_cars(x):
     if isinstance(x,(int,float,np.integer,np.floating)): return int(x)
     if not isinstance(x,str): return np.nan
@@ -126,6 +131,7 @@ def parse_number_of_cars(x):
             return int(p)
     return _to_float_or_nan(x)
 
+#maps address-change buckets to approximate how recent it happened
 def map_address_change(x):
     if not isinstance(x,str): return np.nan
     s = x.strip().lower()
@@ -138,6 +144,9 @@ def map_address_change(x):
     }
     return mapping.get(s,np.nan)
 
+#applies all ordinal parsing rules to the data
+##ensures all temporal, monetary, and range-based features become numeric and comparable. important since tree-based models rely on ordering
+##but cannot infer numeric structure from strings
 def convert_ordinal_strings(df):
     df = df.copy()
 
@@ -177,7 +186,7 @@ train = convert_ordinal_strings(train)
 test  = convert_ordinal_strings(test)
 
 
-# Clean up column names
+#clean up column names as LGBM cannot handle column names with ":" or "-"
 def clean_columns(df):
     df = df.copy()
     df.columns = [re.sub(r"[^A-Za-z0-9_]+","_",c) for c in df.columns]
@@ -187,11 +196,12 @@ train = clean_columns(train)
 test  = clean_columns(test)
 
 
-# Improved feature engineering
+#improved feature engineering
+##captures behaviour patterns, inconsistencies, and interaction terms commonly seen in fraud
 def enhanced_feature_engineering(df):
     df = df.copy()
 
-    # Count encoding for categorical
+    #count encoding for categorical stability, reflecting how common a category is
     for col in df.columns:
         if df[col].dtype == "object":
             df[col + "_count"] = df[col].map(df[col].value_counts())
@@ -207,7 +217,7 @@ def enhanced_feature_engineering(df):
         df["SameDayReport"] = (df["Days_Policy_Claim"] == df["Days_Policy_Accident"]).astype(int)
         df["ClaimDelay"] = df["Days_Policy_Claim"] - df["Days_Policy_Accident"]
     
-    # incosistency features
+    #incosistency features
     df["InconsistencyScore"] = 0
 
     if "Month_num" in df.columns and "MonthClaimed_num" in df.columns:
@@ -222,7 +232,7 @@ def enhanced_feature_engineering(df):
     if "AddressChange_Claim" in df.columns:
         df["InconsistencyScore"] += (df["AddressChange_Claim"] > 1).astype(int)
     
-    # Basic diffs
+    #basic diffs
     def add_diff(a,b,name):
         if a in df.columns and b in df.columns:
             df[name] = df[a] - df[b]
@@ -231,8 +241,7 @@ def enhanced_feature_engineering(df):
     add_diff("DayOfWeek_num","DayOfWeekClaimed_num","DOW_diff")
     add_diff("WeekOfMonth","WeekOfMonthClaimed","WOM_diff")
 
-    # Interaction features
-
+    #interaction features
     def add_interaction(a, b, name):
         if a in df.columns and b in df.columns:
             df[name] = pd.to_numeric(df[a], errors="coerce") * pd.to_numeric(df[b], errors="coerce")
@@ -262,7 +271,7 @@ def enhanced_feature_engineering(df):
     add_product("VehiclePrice","AgeOfVehicle","Price_x_VehicleAge")
     add_ratio("Days_Policy_Accident","Days_Policy_Claim","PolicyAcc_to_Claim_ratio")
 
-    # Claim delay
+    #claim delay
     if "Days_Policy_Claim" in df.columns and "Days_Policy_Accident" in df.columns:
         df["ClaimDelay"] = df["Days_Policy_Claim"] - df["Days_Policy_Accident"]
         df["ClaimDelay_bucket"] = pd.cut(
@@ -271,7 +280,7 @@ def enhanced_feature_engineering(df):
             labels=False
         )
 
-    # Buckets
+    #buckets for explainable grouping
     def add_bucket(col,bins,name):
         if col in df.columns:
             df[name] = pd.cut(pd.to_numeric(df[col],errors="coerce"),
@@ -289,7 +298,7 @@ train_fe = enhanced_feature_engineering(train)
 test_fe  = enhanced_feature_engineering(test)
 
 
-# Rare category smoothing
+# Rare category smoothing -- reduce all categories with <10 occurrences into "RARE" category
 def smooth_rare_categories(df, min_count=10):
     df = df.copy()
     for col in df.columns:
@@ -303,7 +312,7 @@ train_fe = smooth_rare_categories(train_fe)
 test_fe  = smooth_rare_categories(test_fe)
 
 
-# Label encoding (for both train+test)
+# Label encoding (for both train+test) to prevent unseen-category errors, ensuring consistent mapping
 full = pd.concat([train_fe,test_fe], ignore_index=True)
 for col in full.columns:
     if full[col].dtype == "object":
@@ -315,10 +324,12 @@ test_fe  = full.iloc[len(train_fe):]
 
 
 # Multi-seed training function
+##trains XGB, LGBM, CatBoost across 10 folds -> outputs OOF matrix, and then fits a GradientBoosting meta-model + isotonic calibration
 def train_one_seed(seed):
     print(f"\n========== SEED {seed} ==========")
     skf = StratifiedKFold(n_splits=N_FOLDS,shuffle=True,random_state=seed)
 
+    #3 base models into 3 columns in stacking layer
     oof = np.zeros((len(train_fe), 3))
     test_stack = np.zeros((len(test_fe), 3))
 
@@ -328,6 +339,7 @@ def train_one_seed(seed):
         Xtr,Xva = train_fe.iloc[tr], train_fe.iloc[va]
         ytr,yva = y.iloc[tr], y.iloc[va]
 
+        #compute class weights for imbalance
         pos = ytr.sum()
         neg = len(ytr)-pos
         spw = neg / max(pos,1)
@@ -406,6 +418,7 @@ def train_one_seed(seed):
 
 
 # Running multi-seed training and blending 
+##averaging calibrated outputs reduces variance
 all_oof = []
 all_test = []
 
@@ -418,10 +431,10 @@ oof_blend = np.mean(all_oof, axis=0)
 test_blend = np.mean(all_test, axis=0)
 
 final_auc = roc_auc_score(y, oof_blend)
-print("\n==================== FINAL STACK AUC ====================")
+print("\n Final Stack AUC")
 print(f"Final ROC-AUC (multi-seed, calibrated) = {final_auc:.6f}")
 
-
+#threshold tuning (based on precision >= 0.50)
 prec, rec, thr = precision_recall_curve(y, oof_blend)
 
 best_thr = 0.5
@@ -432,7 +445,7 @@ for p, r, t in zip(prec, rec, thr):
         best_rec = r
         best_thr = t
 
-print("\n===== THRESHOLD TUNING =====")
+print("\n Threshold Tuning")
 print(f"Optimal threshold (>=50% precision): {best_thr:.4f}")
 
 pred_class = (oof_blend >= best_thr).astype(int)
