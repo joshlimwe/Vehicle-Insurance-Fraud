@@ -8,3 +8,4 @@ Source: Vehicle Insurance Fraud Detection Dataset published on Kaggle by Khushee
 It contains 15,404 insurance claim records, each labeled to indicate whether the claim was identified as fraudulent (FraudFound: Yes/No). 
 This dataset is suitable for supervised learning as the fraud outcome is known.
 
+Full Project Report can be found here: https://docs.google.com/document/d/1Vair0n_z_n8chNjvAsh-_zX2ayK-IpwCu9mgsDkgXcw/edit?tab=t.0 
